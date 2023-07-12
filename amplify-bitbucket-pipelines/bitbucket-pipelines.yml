@@ -1,0 +1,100 @@
+# Sample pipelines for a NX Repository with pnpm as package manager
+image: node:lts
+
+clone:
+  depth: full
+
+definitions:
+  caches:
+    pnpm:
+      key:
+        files:
+          - pnpm-lock.yaml
+      path: $BITBUCKET_CLONE_DIR/.pnpm-store
+    node:
+      key:
+        files:
+          - pnpm-lock.yaml
+      path: node_modules
+    cypress: $HOME/.cache/Cypress
+    sonar: $HOME/.sonar/cache
+    coverage: ./coverage
+  shared:
+    - &pnpm-activate >-
+      corepack enable
+      && corepack prepare pnpm@latest-7 --activate
+
+  services:
+    docker:
+      memory: 2560
+
+  steps:
+    - step: &pnpm
+        name: Install dependencies
+        caches:
+          - node
+          - cypress
+          - pnpm
+        script:
+          - *pnpm-activate
+          - pnpm install --shamefully-hoist
+    - step: &lint
+        name: Execute lint check
+        caches:
+          - node
+          - pnpm
+        script:
+          - npx nx run-many --all --target=lint
+    - step: &build
+        name: Build
+        caches:
+          - node
+          - pnpm
+        script:
+          - *pnpm-activate
+          - pnpm exec nx build backoffice
+          - pnpm exec nx build diary
+        artifacts:
+          - dist/apps/**
+    - step: &sonarcloud
+        name: Run SonarCloud
+        services:
+          - docker
+        caches:
+          - node
+          - pnpm
+          - sonar
+          - coverage
+          - docker
+        script:
+          - pipe: sonarsource/sonarcloud-scan:1.4.0
+            variables:
+              SONAR_TOKEN: ${SONAR_TOKEN}
+    - step: &deploy
+        name: Deploy Backoffice
+        caches:
+          - node
+          - pnpm
+        script:
+          - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY
+          - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+          - npm install -g @aws-amplify/cli
+          - cd apps/backoffice
+          - sh amplify/pipelines-pull.sh
+          - amplify publish -y
+
+pipelines:
+  pull-requests:
+    "**":
+      - step: *pnpm
+      - step: *lint
+      - step: *build
+      - step: *sonarcloud
+
+  branches:
+    main:
+      - step: *pnpm
+      - step: *lint
+      - step: *build
+      - step: *sonarcloud
+      - step: *deploy
